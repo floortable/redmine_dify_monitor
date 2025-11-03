@@ -30,16 +30,27 @@ STATE_DB = "/var/lib/redmine_dify_monitor/processed_issues.db"
 LOG_FILE = "/var/log/redmine_dify_monitor/redmine_dify_monitor.log"
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 os.makedirs(os.path.dirname(STATE_DB), exist_ok=True)
+LOG_LEVEL_NAME = os.getenv("LOG_LEVEL", "INFO").upper()
+try:
+    LOG_LEVEL = getattr(logging, LOG_LEVEL_NAME)
+    if not isinstance(LOG_LEVEL, int):
+        raise AttributeError
+    _LOG_LEVEL_INVALID = False
+except AttributeError:
+    LOG_LEVEL = logging.INFO
+    _LOG_LEVEL_INVALID = LOG_LEVEL_NAME != "INFO"
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=LOG_LEVEL,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
         RotatingFileHandler(LOG_FILE, maxBytes=5*1024*1024, backupCount=3, encoding="utf-8"),
         logging.StreamHandler()  # ← docker logs に出す
     ]
 )
-logging.info("ログ初期化完了！")
+if _LOG_LEVEL_INVALID:
+    logging.warning(f"LOG_LEVEL '{LOG_LEVEL_NAME}' は不正です。INFO を使用します。")
+logging.info(f"ログ初期化完了！ (LOG_LEVEL={logging.getLevelName(LOG_LEVEL)})")
 
 # --- 状態ロード/保存 ---
 def init_state_db():
@@ -148,10 +159,10 @@ def call_dify(ticket_id):
             logging.debug(f"Dify応答(JSON): {json.dumps(data, ensure_ascii=False, indent=2)}")
         except json.JSONDecodeError:
             logging.error(f"Dify応答がJSONとして解釈できません: {resp.text[:200]}")
-            return None
+            return None, None
     except Exception as e:
         logging.error(f"Dify呼び出し失敗: {e}")
-        return None
+        return None, None
 
     try:
         raw_outputs = data.get("data", {}).get("outputs", "")
@@ -169,9 +180,14 @@ def call_dify(ticket_id):
         else:
             outputs = {}
 
+        status = outputs.get("status")
+        if status and status != "ok":
+            logging.info(f"Dify応答ステータスが非OKのためスキップ: status={status}")
+            return None, status
+
         text = outputs.get("text") or outputs.get("text_1") or outputs.get("gpt") or outputs.get("gemma") or ""
         if not text:
-            return None
+            return None, status
 
         decoded = safe_decode_dify_text(text)
         cleaned = decoded.strip()
@@ -179,13 +195,13 @@ def call_dify(ticket_id):
         # --- 🚫 無効な応答を除外 ---
         if not cleaned or cleaned in ["", "null", "None"] or re.fullmatch(r"\d+", cleaned):
             logging.info(f"Dify応答が無効または数字のみのためスキップ: {repr(cleaned)}")
-            return None
+            return None, status
 
-        return cleaned
+        return cleaned, status or "ok"
     
     except Exception as e:
         logging.error(f"Dify応答解析エラー: {e}")
-        return None
+        return None, None
     
 # --- Dify結果解析 ---
 def parse_dify_result(text):
@@ -348,7 +364,11 @@ def main():
                     continue  # 変更なし → スキップ
 
                 logging.info(f"🆕 処理対象チケット: #{issue_id} ({subject}) → Dify解析開始")
-                result_text = call_dify(issue_id)
+                result_text, dify_status = call_dify(issue_id)
+                if dify_status and dify_status != "ok":
+                    processed[str(issue_id)] = updated_on
+                    upsert_processed_issue(issue_id, updated_on)
+                    continue
                 if not result_text:
                     logging.info("Dify応答なし、スキップ")
                     processed[str(issue_id)] = updated_on
