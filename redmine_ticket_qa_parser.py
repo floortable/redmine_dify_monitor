@@ -81,6 +81,8 @@ def main(inputs: Any) -> dict:
         except Exception:
             pass
 
+        # ==== 質問・回答ペアの特定 ====
+
         # ---- ① 最後の回答（Answer）を抽出 ----
         for i, journal in enumerate(journals):
             notes = journal.get("notes", "") or ""
@@ -118,6 +120,8 @@ def main(inputs: Any) -> dict:
         if previous_question is None and keyword_question in str(description):
             previous_question = extract_after_last_separator(description)
         previous_question = previous_question or ""
+
+        # ==== caseid 整合性チェック ====
 
         # ---- ④ custom_fields から caseid を取得 ----
         caseid = None
