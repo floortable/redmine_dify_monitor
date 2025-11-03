@@ -13,7 +13,7 @@ from logging.handlers import RotatingFileHandler
 import traceback
 import signal
 import sys
-import sqlite3
+from state_manager import load_processed_issues, save_processed_issue
 
 # --- 設定 ---
 REDMINE_URL = os.getenv("REDMINE_URL", "http://localhost:3000")
@@ -51,54 +51,6 @@ logging.basicConfig(
 if _LOG_LEVEL_INVALID:
     logging.warning(f"LOG_LEVEL '{LOG_LEVEL_NAME}' は不正です。INFO を使用します。")
 logging.info(f"ログ初期化完了！ (LOG_LEVEL={logging.getLevelName(LOG_LEVEL)})")
-
-# --- 状態ロード/保存 ---
-def init_state_db():
-    try:
-        with sqlite3.connect(STATE_DB) as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS processed_issues (
-                    issue_id TEXT PRIMARY KEY,
-                    updated_on TEXT NOT NULL,
-                    last_seen_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-                )
-                """
-            )
-    except sqlite3.Error as e:
-        logging.error(f"状態DB初期化失敗: {e}")
-        raise
-
-def load_processed_issues():
-    try:
-        init_state_db()
-    except Exception:
-        return {}
-
-    try:
-        with sqlite3.connect(STATE_DB) as conn:
-            cursor = conn.execute("SELECT issue_id, updated_on FROM processed_issues")
-            return {issue_id: updated_on for issue_id, updated_on in cursor.fetchall()}
-    except sqlite3.Error as e:
-        logging.error(f"状態DB読み込み失敗: {e}")
-        return {}
-
-def upsert_processed_issue(issue_id, updated_on):
-    try:
-        with sqlite3.connect(STATE_DB) as conn:
-            conn.execute(
-                """
-                INSERT INTO processed_issues (issue_id, updated_on, last_seen_at)
-                VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-                ON CONFLICT(issue_id) DO UPDATE SET
-                    updated_on=excluded.updated_on,
-                    last_seen_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
-                """,
-                (str(issue_id), updated_on),
-            )
-            conn.commit()
-    except sqlite3.Error as e:
-        logging.error(f"状態DB更新失敗(issue_id={issue_id}): {e}")
 
 # --- タイムゾーン対応 ---
 def normalize_timestamp(ts):
@@ -420,7 +372,7 @@ def handle_shutdown(signum, frame):
 
 # --- メインループ ---
 def main():
-    processed = load_processed_issues()
+    processed = load_processed_issues(STATE_DB)
 
     while True:
         try:
@@ -441,16 +393,16 @@ def main():
                     logging.warning(f"caseid mismatch 検知: チケット #{issue_id} ({subject})")
                     post_caseid_mismatch_alert(issue)
                     processed[str(issue_id)] = updated_on
-                    upsert_processed_issue(issue_id, updated_on)
+                    save_processed_issue(STATE_DB, issue_id, updated_on)
                     continue
                 if dify_status and dify_status != "ok":
                     processed[str(issue_id)] = updated_on
-                    upsert_processed_issue(issue_id, updated_on)
+                    save_processed_issue(STATE_DB, issue_id, updated_on)
                     continue
                 if not result_text:
                     logging.info("Dify応答なし、スキップ")
                     processed[str(issue_id)] = updated_on
-                    upsert_processed_issue(issue_id, updated_on)
+                    save_processed_issue(STATE_DB, issue_id, updated_on)
                     continue
 
                 #if result and result["査閲結果"] == "却下":
@@ -463,7 +415,7 @@ def main():
 
                 # 更新時刻を記録
                 processed[str(issue_id)] = updated_on
-                upsert_processed_issue(issue_id, updated_on)
+                save_processed_issue(STATE_DB, issue_id, updated_on)
 
         except Exception as e:
             logging.error(f"メインループエラー: {e}\n{traceback.format_exc()}")

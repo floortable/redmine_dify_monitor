@@ -5,6 +5,7 @@ services:
     working_dir: /app
     volumes:
       - ./redmine_dify_monitor.py:/app/redmine_dify_monitor.py:ro
+      - ./state_manager.py:/app/state_manager.py:ro
       - ./state:/var/lib/redmine_dify_monitor
       - ./logs:/var/log/redmine_dify_monitor
     env_file:
