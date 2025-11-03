@@ -182,7 +182,10 @@ def call_dify(ticket_id):
 
         status = outputs.get("status")
         if status and status != "ok":
-            logging.info(f"Dify応答ステータスが非OKのためスキップ: status={status}")
+            if status == "caseid_mismatch":
+                logging.warning(f"Dify応答ステータスがcaseid_mismatch: チケットID={ticket_id}")
+            else:
+                logging.info(f"Dify応答ステータスが非OKのためスキップ: status={status}")
             return None, status
 
         text = outputs.get("text") or outputs.get("text_1") or outputs.get("gpt") or outputs.get("gemma") or ""
@@ -341,6 +344,75 @@ def post_to_teams(issue, result):
                 logging.warning(f"Teams送信失敗({attempt+1}/3): {e}")
                 time.sleep(wait)
 
+def post_caseid_mismatch_alert(issue):
+    """caseidが一致しない場合の高優先度アラート"""
+    ticket_id = issue["id"]
+    subject = issue["subject"]
+    webhooks = [TEAMS_WEBHOOK_URL]
+    if TEAMS_WEBHOOK_SECONDARY_URL:
+        webhooks.append(TEAMS_WEBHOOK_SECONDARY_URL)
+
+    card = {
+        "type": "message",
+        "attachments": [{
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": {
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "type": "AdaptiveCard",
+                "version": "1.4",
+                "body": [
+                    {
+                        "type": "Container",
+                        "style": "attention",
+                        "bleed": True,
+                        "items": [
+                            {
+                                "type": "TextBlock",
+                                "text": "🚨 受付番号不一致の可能性",
+                                "size": "Large",
+                                "weight": "Bolder",
+                                "color": "Attention"
+                            },
+                            {
+                                "type": "TextBlock",
+                                "text": f"[Redmine チケット #{ticket_id}]({REDMINE_URL}/issues/{ticket_id})",
+                                "wrap": True,
+                                "spacing": "Small"
+                            },
+                            {
+                                "type": "TextBlock",
+                                "text": f"件名：{subject}",
+                                "wrap": True,
+                                "spacing": "Small"
+                            },
+                            {
+                                "type": "TextBlock",
+                                "text": "Difyが caseid mismatch を検知しました。異なる受付番号への回答が申告されています。至急確認してください。",
+                                "wrap": True,
+                                "spacing": "Medium",
+                                "color": "Attention"
+                            }
+                        ]
+                    }
+                ]
+            }
+        }]
+    }
+
+    logging.debug(f"caseid mismatch アラートカード:\n{json.dumps(card, ensure_ascii=False, indent=2)}")
+
+    for webhook in webhooks:
+        for attempt in range(3):
+            try:
+                resp = requests.post(webhook, json=card, timeout=10)
+                resp.raise_for_status()
+                logging.info(f"Teams送信成功 (caseid_mismatch) → {webhook}")
+                break
+            except Exception as e:
+                wait = 2 ** attempt
+                logging.warning(f"Teams送信失敗(caseid_mismatch {attempt+1}/3): {e}")
+                time.sleep(wait)
+
 # --- SIGTERM対応 ---
 def handle_shutdown(signum, frame):
     logging.info(f"停止シグナル({signum})を受信しました。終了します。")
@@ -365,6 +437,12 @@ def main():
 
                 logging.info(f"🆕 処理対象チケット: #{issue_id} ({subject}) → Dify解析開始")
                 result_text, dify_status = call_dify(issue_id)
+                if dify_status == "caseid_mismatch":
+                    logging.warning(f"caseid mismatch 検知: チケット #{issue_id} ({subject})")
+                    post_caseid_mismatch_alert(issue)
+                    processed[str(issue_id)] = updated_on
+                    upsert_processed_issue(issue_id, updated_on)
+                    continue
                 if dify_status and dify_status != "ok":
                     processed[str(issue_id)] = updated_on
                     upsert_processed_issue(issue_id, updated_on)
