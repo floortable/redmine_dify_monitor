@@ -54,6 +54,40 @@ docker compose up -d
 
 既存の外部ネットワーク `docker_default` に接続する構成です。ネットワーク名が異なる場合は `docker-compose.yml` を編集してください。
 
+### 5. systemd で常駐運用する場合
+
+Docker を使わずホスト上の systemd で常駐監視したい場合は以下の手順を参考にしてください。
+
+```bash
+# サービスファイルを配置
+sudo cp redmine_dify_monitor.service /etc/systemd/system/
+
+# 必要に応じて編集
+sudo editor /etc/systemd/system/redmine_dify_monitor.service
+```
+
+`redmine_dify_monitor.service` 内の以下項目を環境に合わせて変更してください。
+
+- `WorkingDirectory` / `ExecStart`: 実際に配置したリポジトリパスに置き換える
+- `Environment=...`: `.env` と同じ値に書き換えるか、`EnvironmentFile` 行をアンコメントして `/etc/redmine_dify_monitor.env` などに機密情報をまとめる
+- `User` / `Group`: サービスを動かすユーザーを指定する（必要な場合）
+
+設定を保存したら、systemd に再読込させ、起動と自動起動設定を行います。
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now redmine_dify_monitor.service
+```
+
+起動後の確認やログ参照は以下のコマンドが便利です。
+
+```bash
+sudo systemctl status redmine_dify_monitor.service
+sudo journalctl -u redmine_dify_monitor.service -f
+```
+
+systemd 運用と Docker 運用は併用せず、どちらか一方を選択してください（両方起動すると二重通知が発生します）。
+
 ## ログと状態管理
 - ログは `/var/log/redmine_dify_monitor/redmine_dify_monitor.log` に出力され、ローテーションしながら Docker 標準出力にも流れます。
 - 処理済みチケットの更新時刻は `/var/lib/redmine_dify_monitor/processed_issues.db`（SQLite）に保存されます。ファイル破損時は削除で再生成できます。
