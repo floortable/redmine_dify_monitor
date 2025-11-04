@@ -15,7 +15,7 @@ Redmine のチケット更新を監視し、Dify ワークフローで審査結�
 ### 1. リポジトリを取得
 
 ```bash
-git clone <REPO_URL>
+git clone https://github.com/floortable/redmine_dify_monitor.git
 cd redmine_dify_monitor
 ```
 
