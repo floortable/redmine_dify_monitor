@@ -1,0 +1,25 @@
+[Unit]
+Description=Redmine Dify Monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/path/to/redmine_dify_monitor
+#EnvironmentFile=/etc/redmine_dify_monitor.env
+Environment="REDMINE_URL=https://redmine.example.com"
+Environment="REDMINE_API_KEY=your_redmine_api_key"
+Environment="DIFY_API_URL=https://dify.example.com/v1/workflows/execute"
+Environment="DIFY_API_KEY=your_dify_api_key"
+Environment="TEAMS_WEBHOOK_URL=https://graph.microsoft.com/...primary"
+Environment="TEAMS_WEBHOOK_SECONDARY_URL=https://graph.microsoft.com/...secondary"
+Environment="POLL_INTERVAL=60"
+Environment="LOG_LEVEL=INFO"
+ExecStart=/usr/bin/env python3 /path/to/redmine_dify_monitor/redmine_dify_monitor.py
+Restart=on-failure
+RestartSec=10
+#User=redmine
+#Group=redmine
+
+[Install]
+WantedBy=multi-user.target
