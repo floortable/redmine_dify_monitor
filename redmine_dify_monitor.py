@@ -13,6 +13,8 @@ from logging.handlers import RotatingFileHandler
 import traceback
 import signal
 import sys
+from openpyxl import Workbook, load_workbook
+from openpyxl.styles import PatternFill
 from state_manager import load_processed_issues, save_processed_issue
 
 # --- 設定 ---
@@ -30,6 +32,10 @@ STATE_DB = "/var/lib/redmine_dify_monitor/processed_issues.db"
 LOG_FILE = "/var/log/redmine_dify_monitor/redmine_dify_monitor.log"
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 os.makedirs(os.path.dirname(STATE_DB), exist_ok=True)
+EXCEL_FILE = os.getenv("REVIEW_RESULT_EXCEL", "/var/lib/redmine_dify_monitor/review_results.xlsx")
+EXCEL_DIR = os.path.dirname(EXCEL_FILE)
+if EXCEL_DIR:
+    os.makedirs(EXCEL_DIR, exist_ok=True)
 LOG_LEVEL_NAME = os.getenv("LOG_LEVEL", "INFO").upper()
 try:
     LOG_LEVEL = getattr(logging, LOG_LEVEL_NAME)
@@ -200,6 +206,50 @@ def parse_dify_result(text):
     logging.debug("=== parse_dify_result 正常終了 ===")
 
     return {"査閲結果": m_result.group(2), "理由": m_reason.group(2).strip() if m_reason else "理由なし"}
+
+# --- Excel 追記 ---
+def append_result_to_excel(issue, result):
+    if not result:
+        return
+
+    try:
+        if not os.path.exists(EXCEL_FILE):
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "査閲結果"
+            ws.append(["記録日時", "チケットID", "件名", "査閲結果", "理由"])
+            wb.save(EXCEL_FILE)
+
+        wb = load_workbook(EXCEL_FILE)
+        ws = wb.active
+
+        recorded_at = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S%z")
+        row = [
+            recorded_at,
+            issue.get("id"),
+            issue.get("subject"),
+            result.get("査閲結果", "不明"),
+            result.get("理由", ""),
+        ]
+        ws.append(row)
+
+        latest_row = ws.max_row
+        result_value = (result.get("査閲結果") or "").strip()
+        fill_color = {
+            "承認": "C6EFCE",  # Light green
+            "却下": "FFC7CE",  # Light red
+            "不明": "D9D9D9",  # Gray
+        }.get(result_value, "FFFFFF")
+
+        if fill_color != "FFFFFF":
+            fill = PatternFill(start_color=fill_color, end_color=fill_color, fill_type="solid")
+            for cell in ws[latest_row]:
+                cell.fill = fill
+
+        wb.save(EXCEL_FILE)
+        logging.debug(f"Excelに査閲結果を追記しました: {EXCEL_FILE} (行: {latest_row})")
+    except Exception as e:
+        logging.error(f"Excel追記に失敗しました: {e}")
 
 # --- Teams投稿 ---
 def post_to_teams(issue, result):
@@ -409,9 +459,11 @@ def main():
                 #    update_redmine_status(issue_id, 5)  # “差し戻し” のステータスIDに置き換え
 
                 result = parse_dify_result(result_text)
-                if result and result["査閲結果"] != "不明":
-                    post_to_teams(issue, result)
-                    logging.info(f"Teamsに投稿: {result['査閲結果']} ({subject})")
+                if result:
+                    append_result_to_excel(issue, result)
+                    if result.get("査閲結果") != "不明":
+                        post_to_teams(issue, result)
+                        logging.info(f"Teamsに投稿: {result['査閲結果']} ({subject})")
 
                 # 更新時刻を記録
                 processed[str(issue_id)] = updated_on
