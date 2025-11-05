@@ -257,6 +257,43 @@ def append_result_to_excel(issue, result):
         logging.error(f"Excel追記に失敗しました: {e}")
 
 # --- Teams投稿 ---
+def send_adaptive_card(webhooks, body, summary=None, version="1.4", additional_content=None, success_label=None):
+    """Teams Webhook / Power Automate 向けの共通送信処理"""
+    card_content = {
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "type": "AdaptiveCard",
+        "version": version,
+        "body": body,
+    }
+    if additional_content:
+        card_content.update(additional_content)
+
+    payload = {
+        "type": "message",
+        "attachments": [{
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": card_content
+        }]
+    }
+    if summary:
+        payload["summary"] = summary
+
+    logging.debug(f"送信カード内容:\n{json.dumps(payload, ensure_ascii=False, indent=2)}")
+
+    for webhook in webhooks:
+        for attempt in range(3):
+            try:
+                resp = requests.post(webhook, json=payload, timeout=10)
+                resp.raise_for_status()
+                label = f" ({success_label})" if success_label else ""
+                logging.info(f"Teams送信成功{label} → {webhook}")
+                break
+            except Exception as e:
+                wait = 2 ** attempt
+                logging.warning(f"Teams送信失敗({attempt+1}/3): {e}")
+                time.sleep(wait)
+
+
 def post_to_teams(issue, result):
     """Adaptive CardをTeamsに投稿"""
     ticket_id = issue["id"]
@@ -321,35 +358,8 @@ def post_to_teams(issue, result):
             ]
         }
 
-    # AdaptiveCard本体
-    card = {
-        "type": "message",
-        "attachments": [{
-            "contentType": "application/vnd.microsoft.card.adaptive",
-            "content": {
-                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-                "type": "AdaptiveCard",
-                "version": "1.4",
-                "body": [bg_style],
-            }
-        }]
-    }
-
-    # 🔍 DEBUG ログに出力
-    logging.debug(f"送信カード内容:\n{json.dumps(card, ensure_ascii=False, indent=2)}")
-
-    # 複数Webhookに送信
-    for webhook in webhooks:
-        for attempt in range(3):
-            try:
-                resp = requests.post(webhook, json=card, timeout=10)
-                resp.raise_for_status()
-                logging.info(f"Teams送信成功 ({m_result}) → {webhook}")
-                break
-            except Exception as e:
-                wait = 2 ** attempt
-                logging.warning(f"Teams送信失敗({attempt+1}/3): {e}")
-                time.sleep(wait)
+    summary = f"Redmine チケット #{ticket_id} {m_result}"
+    send_adaptive_card(webhooks, [bg_style], summary=summary, success_label=m_result)
 
 def post_caseid_mismatch_alert(issue):
     """caseidが一致しない場合の高優先度アラート"""
@@ -359,66 +369,42 @@ def post_caseid_mismatch_alert(issue):
     if TEAMS_WEBHOOK_SECONDARY_URL:
         webhooks.append(TEAMS_WEBHOOK_SECONDARY_URL)
 
-    card = {
-        "type": "message",
-        "attachments": [{
-            "contentType": "application/vnd.microsoft.card.adaptive",
-            "content": {
-                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-                "type": "AdaptiveCard",
-                "version": "1.4",
-                "body": [
-                    {
-                        "type": "Container",
-                        "style": "attention",
-                        "bleed": True,
-                        "items": [
-                            {
-                                "type": "TextBlock",
-                                "text": "🚨 受付番号不一致の可能性",
-                                "size": "Large",
-                                "weight": "Bolder",
-                                "color": "Attention"
-                            },
-                            {
-                                "type": "TextBlock",
-                                "text": f"[Redmine チケット #{ticket_id}]({REDMINE_URL}/issues/{ticket_id})",
-                                "wrap": True,
-                                "spacing": "Small"
-                            },
-                            {
-                                "type": "TextBlock",
-                                "text": f"件名：{subject}",
-                                "wrap": True,
-                                "spacing": "Small"
-                            },
-                            {
-                                "type": "TextBlock",
-                                "text": "Difyが caseid mismatch を検知しました。異なる受付番号への回答が申告されています。至急確認してください。",
-                                "wrap": True,
-                                "spacing": "Medium",
-                                "color": "Attention"
-                            }
-                        ]
-                    }
-                ]
+    container = {
+        "type": "Container",
+        "style": "attention",
+        "bleed": True,
+        "items": [
+            {
+                "type": "TextBlock",
+                "text": "🚨 受付番号不一致の可能性",
+                "size": "Large",
+                "weight": "Bolder",
+                "color": "Attention"
+            },
+            {
+                "type": "TextBlock",
+                "text": f"[Redmine チケット #{ticket_id}]({REDMINE_URL}/issues/{ticket_id})",
+                "wrap": True,
+                "spacing": "Small"
+            },
+            {
+                "type": "TextBlock",
+                "text": f"件名：{subject}",
+                "wrap": True,
+                "spacing": "Small"
+            },
+            {
+                "type": "TextBlock",
+                "text": "Difyが caseid mismatch を検知しました。異なる受付番号への回答が申告されています。至急確認してください。",
+                "wrap": True,
+                "spacing": "Medium",
+                "color": "Attention"
             }
-        }]
+        ]
     }
 
-    logging.debug(f"caseid mismatch アラートカード:\n{json.dumps(card, ensure_ascii=False, indent=2)}")
-
-    for webhook in webhooks:
-        for attempt in range(3):
-            try:
-                resp = requests.post(webhook, json=card, timeout=10)
-                resp.raise_for_status()
-                logging.info(f"Teams送信成功 (caseid_mismatch) → {webhook}")
-                break
-            except Exception as e:
-                wait = 2 ** attempt
-                logging.warning(f"Teams送信失敗(caseid_mismatch {attempt+1}/3): {e}")
-                time.sleep(wait)
+    summary = f"Redmine チケット #{ticket_id} caseid mismatch"
+    send_adaptive_card(webhooks, [container], summary=summary, success_label="caseid_mismatch")
 
 # --- SIGTERM対応 ---
 def handle_shutdown(signum, frame):
