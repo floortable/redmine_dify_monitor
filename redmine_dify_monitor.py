@@ -23,6 +23,7 @@ REDMINE_API_KEY = os.getenv("REDMINE_API_KEY", "your_redmine_api_key")
 
 DIFY_API_URL = os.getenv("DIFY_API_URL", "http://localhost:5001/v1/workflows/execute")
 DIFY_API_KEY = os.getenv("DIFY_API_KEY", "your_dify_api_key")
+DIFY_LLM = os.getenv("DIFY_LLM", "GPT")
 
 TEAMS_WEBHOOK_URL = os.getenv("TEAMS_WEBHOOK_URL", "https://graph.microsoft.com/...")
 TEAMS_WEBHOOK_SECONDARY_URL = os.getenv("TEAMS_WEBHOOK_SECONDARY_URL", "")
@@ -103,7 +104,7 @@ def safe_decode_dify_text(text: str) -> str:
 # --- Dify 呼び出し ---
 def call_dify(ticket_id):
     DIFY_HEADERS = {"Authorization": f"Bearer {DIFY_API_KEY}", "Content-Type": "application/json"}
-    payload = {"inputs": {"ticketid": ticket_id, "LLM": "GPT"}, "response_mode": "blocking", "user": "redmine-monitor"}
+    payload = {"inputs": {"ticketid": ticket_id, "LLM": DIFY_LLM}, "response_mode": "blocking", "user": "redmine-monitor"}
 
     logging.debug(f"Dify呼び出し開始 URL={DIFY_API_URL}")
     logging.debug(f"Difyリクエストヘッダ: {json.dumps(DIFY_HEADERS, ensure_ascii=False, indent=2)}")
@@ -217,11 +218,14 @@ def append_result_to_excel(issue, result):
             wb = Workbook()
             ws = wb.active
             ws.title = "査閲結果"
-            ws.append(["記録日時", "チケットID", "件名", "査閲結果", "理由"])
+            ws.append(["記録日時", "チケットID", "件名", "査閲結果", "理由", "使用LLM"])
             wb.save(EXCEL_FILE)
 
         wb = load_workbook(EXCEL_FILE)
         ws = wb.active
+        header = [cell.value for cell in ws[1]]
+        if "使用LLM" not in header:
+            ws.cell(row=1, column=len(header) + 1).value = "使用LLM"
 
         recorded_at = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S%z")
         row = [
@@ -230,6 +234,7 @@ def append_result_to_excel(issue, result):
             issue.get("subject"),
             result.get("査閲結果", "不明"),
             result.get("理由", ""),
+            result.get("LLM", DIFY_LLM),
         ]
         ws.append(row)
 
@@ -460,6 +465,10 @@ def main():
 
                 result = parse_dify_result(result_text)
                 if result:
+                    if isinstance(result, dict):
+                        result.setdefault("LLM", DIFY_LLM)
+                    else:
+                        result = {"査閲結果": str(result), "理由": "", "LLM": DIFY_LLM}
                     append_result_to_excel(issue, result)
                     if result.get("査閲結果") != "不明":
                         post_to_teams(issue, result)
