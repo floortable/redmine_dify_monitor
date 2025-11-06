@@ -72,7 +72,7 @@ def normalize_timestamp(ts):
     
 # --- Redmine チケット取得 ---
 def get_recent_issues():
-    params = {"key": REDMINE_API_KEY, "status_id": "*", "sort": "updated_on:desc", "limit": 10}
+    params = {"key": REDMINE_API_KEY, "status_id": "*", "sort": "updated_on:desc", "limit": 73}
     for attempt in range(2):
         try:
             resp = requests.get(f"{REDMINE_URL}/issues.json", params=params, timeout=30)
@@ -320,14 +320,14 @@ def post_to_teams(issue, result):
         bg_style = {
             "type": "Container",
             "items": [
-                {"type": "TextBlock", "text": f"{emoji} **チケット却下**", "size": "Large", "weight": "Bolder", "color": "Attention"},
+                {"type": "TextBlock", "text": f"{emoji} **LLMが誤送信の可能性を検知しました**", "size": "Large", "weight": "Bolder", "color": "Attention"},
                 {"type": "TextBlock", "text": f"[Redmine チケット #{ticket_id}]({REDMINE_URL}/issues/{ticket_id})", "wrap": True, "spacing": "Small"},
                 {"type": "TextBlock", "text": f"件名：{subject}", "wrap": True, "spacing": "Small"},
                 {
                     "type": "Container",
                     "style": "emphasis",
                     "items": [
-                        {"type": "TextBlock", "text": "却下理由", "weight": "Bolder", "color": "Attention"},
+                        {"type": "TextBlock", "text": "理由", "weight": "Bolder", "color": "Attention"},
                         {"type": "TextBlock", "text": m_reason, "wrap": True, "spacing": "Small"},
                     ],
                     "bleed": True
