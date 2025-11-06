@@ -29,10 +29,14 @@ TEAMS_WEBHOOK_URL = os.getenv("TEAMS_WEBHOOK_URL", "https://graph.microsoft.com/
 TEAMS_WEBHOOK_SECONDARY_URL = os.getenv("TEAMS_WEBHOOK_SECONDARY_URL", "")
 
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "60"))  # 秒単位
-STATE_DB = "/var/lib/redmine_dify_monitor/processed_issues.db"
-LOG_FILE = "/var/log/redmine_dify_monitor/redmine_dify_monitor.log"
-os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
-os.makedirs(os.path.dirname(STATE_DB), exist_ok=True)
+STATE_DB = os.getenv("STATE_DB", "/var/lib/redmine_dify_monitor/processed_issues.db")
+STATE_DB_DIR = os.path.dirname(STATE_DB)
+if STATE_DB_DIR:
+    os.makedirs(STATE_DB_DIR, exist_ok=True)
+LOG_FILE = os.getenv("LOG_FILE", "/var/log/redmine_dify_monitor/redmine_dify_monitor.log")
+LOG_DIR = os.path.dirname(LOG_FILE)
+if LOG_DIR:
+    os.makedirs(LOG_DIR, exist_ok=True)
 EXCEL_FILE = os.getenv("REVIEW_RESULT_EXCEL", "/var/lib/redmine_dify_monitor/review_results.xlsx")
 EXCEL_DIR = os.path.dirname(EXCEL_FILE)
 if EXCEL_DIR:
