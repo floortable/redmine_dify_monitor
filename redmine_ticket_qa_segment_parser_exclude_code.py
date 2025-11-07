@@ -24,7 +24,7 @@ def _normalize_entries(inputs: Any) -> Iterable[dict]:
 def main(inputs: Any):
     """
     RedmineチケットJSONから、質問・回答の履歴を時系列順に抽出する。
-    ログやスタックトレースを自動削除・要約。
+    ログやスタックトレースなどノイズを削除する（要約は行わない）。
 
     出力形式:
     {
@@ -40,8 +40,7 @@ def main(inputs: Any):
     keyword_question = "Question"
     keyword_answer = "Answer"
     separator = "-------------------------------------------"
-    MAX_ENTRIES = 10       # トークン削減用：履歴の最大件数
-    MAX_TEXT_LENGTH = 500  # 要約対象の閾値
+    MAX_ENTRIES = 10  # トークン削減用：履歴の最大件数
 
     def extract_after_last_separator(text: str) -> str:
         """<pre>や```を除去し、最後の区切り線以降を抽出"""
@@ -61,10 +60,9 @@ def main(inputs: Any):
     def remove_logs(text: str) -> str:
         """
         syslogやコードブロックのようなログ行を削除・置換。
-        - 長い数字や日付時刻が並ぶ行
-        - "ERROR", "INFO", "DEBUG"を含む行
-        - { }, [] によるJSON風データ
-        - 多行コードブロック ```～```
+        - 日時やログレベルを含む行
+        - JSONやbase64のような行
+        - 長すぎる行 (>200文字)
         """
         if not text:
             return ""
@@ -74,28 +72,15 @@ def main(inputs: Any):
             # syslog / timestamp / log level
             if re.match(r"^\s*(\d{4}-\d{2}-\d{2}|\d{2}:\d{2}:\d{2}|INFO|ERROR|DEBUG|TRACE)", line):
                 continue
-            # JSONやコードブロックっぽい
+            # JSONっぽい or base64っぽい
             if re.match(r"^\s*[{\[].*[}\]]\s*$", line):
                 continue
             if len(line.strip()) > 200:
-                # 1行が非常に長い場合（バイナリorスタックトレース）
+                # 1行が非常に長い（バイナリorトレース）
                 continue
             filtered.append(line)
         cleaned = "\n".join(filtered).strip()
-
-        # 残骸が空になった場合は「ログ省略」と明記
         return cleaned if cleaned else "[ログ省略]"
-
-    def summarize_text(text: str) -> str:
-        """長文を簡易要約して圧縮"""
-        if not text:
-            return ""
-        text = remove_logs(text)
-        if len(text) <= MAX_TEXT_LENGTH:
-            return text
-        head = text[:200].strip()
-        tail = text[-100:].strip()
-        return f"{head}\n…（中略）…\n{tail}"
 
     all_entries = []
 
@@ -111,7 +96,7 @@ def main(inputs: Any):
             if text:
                 all_entries.append({
                     "type": "question",
-                    "text": summarize_text(text),
+                    "text": remove_logs(text),
                     "created_on": issue_created
                 })
 
@@ -133,7 +118,7 @@ def main(inputs: Any):
                 if q_text:
                     all_entries.append({
                         "type": "question",
-                        "text": summarize_text(q_text),
+                        "text": remove_logs(q_text),
                         "created_on": created_on
                     })
 
@@ -142,7 +127,7 @@ def main(inputs: Any):
                 if a_text:
                     all_entries.append({
                         "type": "answer",
-                        "text": summarize_text(a_text),
+                        "text": remove_logs(a_text),
                         "created_on": created_on
                     })
 
