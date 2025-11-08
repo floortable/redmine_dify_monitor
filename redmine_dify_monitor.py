@@ -15,7 +15,8 @@ import signal
 import sys
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import PatternFill
-from state_manager import load_processed_issues, save_processed_issue
+from case_cleaner import cleanup_case_directory
+from state_manager import load_processed_issues, save_processed_issue, prune_stale_issues
 
 # --- 設定 ---
 REDMINE_URL = os.getenv("REDMINE_URL", "http://localhost:3000")
@@ -69,6 +70,19 @@ def normalize_timestamp(ts):
         return parser.parse(ts).astimezone(timezone.utc).isoformat()
     except Exception:
         return ts
+
+
+def extract_caseid(issue):
+    """Redmineチケットのcustom_fieldsからcaseidを取得"""
+    try:
+        for field in issue.get("custom_fields", []):
+            if field.get("name") == "caseid":
+                value = str(field.get("value", "")).strip()
+                if value:
+                    return value
+    except Exception as exc:
+        logging.warning(f"caseid抽出失敗(issue#{issue.get('id')}): {exc}")
+    return ""
     
 # --- Redmine チケット取得 ---
 def get_recent_issues():
@@ -417,20 +431,35 @@ def handle_shutdown(signum, frame):
 
 # --- メインループ ---
 def main():
-    processed = load_processed_issues(STATE_DB)
+    processed = load_processed_issues(STATE_DB)  # issue_id→updated_on のキャッシュ
 
     while True:
         try:
             issues = get_recent_issues()
             for issue in issues:
                 issue_id = issue["id"]
-                updated_on = issue["updated_on"]
                 subject = issue["subject"]
 
                 updated_on = normalize_timestamp(issue["updated_on"])
                 last_time = processed.get(str(issue_id))
                 if last_time == updated_on:
-                    continue  # 変更なし → スキップ
+                    continue  # 変更なし → Dify呼び出し不要
+
+                status_info = issue.get("status", {}) or {}
+                status_name = status_info.get("name", "")
+                # 「終了」ステータスでチケットを終了扱いとし、case_cleanerに通知する
+                status_is_closed = (status_name == "終了")
+                caseid = extract_caseid(issue)
+
+                if status_is_closed:
+                    cleaned = cleanup_case_directory(caseid, ticket_id=issue_id)
+                    if cleaned:
+                        logging.info(f"case_cleaner: チケット#{issue_id} ({subject}) のcaseidディレクトリを削除しました。")
+                    else:
+                        logging.info(f"case_cleaner: チケット#{issue_id} ({subject}) で削除対象が見つからないか失敗しました。")
+                    save_processed_issue(STATE_DB, issue_id, updated_on)
+                    processed[str(issue_id)] = updated_on
+                    continue
 
                 logging.info(f"🆕 処理対象チケット: #{issue_id} ({subject}) → Dify解析開始")
                 result_text, dify_status = call_dify(issue_id)
@@ -464,9 +493,13 @@ def main():
                         post_to_teams(issue, result)
                         logging.info(f"Teamsに投稿: {result['査閲結果']} ({subject})")
 
-                # 更新時刻を記録
+                # 二重処理防止のため、最新のupdated_onを状態DBへ保存
                 processed[str(issue_id)] = updated_on
                 save_processed_issue(STATE_DB, issue_id, updated_on)
+
+            # removed = prune_stale_issues(STATE_DB, max_age_days=180)
+            # if removed:
+            #     logging.info(f"STATE_DB: 180日超未更新のレコードを{removed}件削除しました。")
 
         except Exception as e:
             logging.error(f"メインループエラー: {e}\n{traceback.format_exc()}")
