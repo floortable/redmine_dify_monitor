@@ -1,49 +1,37 @@
 from typing import Any, Iterable, Sequence
 import re
 
-
 def _normalize_entries(inputs: Any) -> Iterable[dict]:
-    """Dify入力の揺れを吸収してイテレーション可能な形に揃える。"""
     if isinstance(inputs, dict):
         candidate = inputs.get("inputs", inputs)
     else:
         candidate = inputs
-
     if candidate is None:
         return ()
-
     if isinstance(candidate, dict):
         return (candidate,)
-
     if isinstance(candidate, Sequence) and not isinstance(candidate, (str, bytes, bytearray)):
         return (entry for entry in candidate if isinstance(entry, dict))
-
     return ()
-
 
 def main(inputs: Any):
     """
-    RedmineチケットJSONから、質問・回答の履歴を時系列順に抽出する。
-    ログやスタックトレースなどノイズを削除する（要約は行わない）。
+    Redmineチケットの履歴から質問／回答を抽出し、
+    全体文字数で上限を制御（長文を含む場合でも安全にトークン削減）。
 
-    出力形式:
+    出力:
     {
-      "entries": [
-        {"type": "question", "text": "...", "created_on": "..."},
-        {"type": "answer", "text": "...", "created_on": "..."},
-        ...
-      ],
-      "status": "ok"
+      "entries": [...],
+      "status": "ok" or "incomplete"
     }
     """
 
     keyword_question = "Question"
     keyword_answer = "Answer"
     separator = "-------------------------------------------"
-    MAX_ENTRIES = 10  # トークン削減用：履歴の最大件数
+    MAX_TOTAL_CHARS = 6000  # ← 全履歴の合計文字数上限
 
     def extract_after_last_separator(text: str) -> str:
-        """<pre>や```を除去し、最後の区切り線以降を抽出"""
         if not text:
             return ""
         clean = (
@@ -58,25 +46,17 @@ def main(inputs: Any):
         return clean.strip()
 
     def remove_logs(text: str) -> str:
-        """
-        syslogやコードブロックのようなログ行を削除・置換。
-        - 日時やログレベルを含む行
-        - JSONやbase64のような行
-        - 長すぎる行 (>200文字)
-        """
         if not text:
             return ""
         lines = text.splitlines()
         filtered = []
         for line in lines:
-            # syslog / timestamp / log level
+            # syslog形式、長すぎる行、JSONなどを除外
             if re.match(r"^\s*(\d{4}-\d{2}-\d{2}|\d{2}:\d{2}:\d{2}|INFO|ERROR|DEBUG|TRACE)", line):
                 continue
-            # JSONっぽい or base64っぽい
             if re.match(r"^\s*[{\[].*[}\]]\s*$", line):
                 continue
             if len(line.strip()) > 200:
-                # 1行が非常に長い（バイナリorトレース）
                 continue
             filtered.append(line)
         cleaned = "\n".join(filtered).strip()
@@ -90,7 +70,7 @@ def main(inputs: Any):
         description = issue.get("description", "") or ""
         issue_created = issue.get("created_on", "")
 
-        # ---- descriptionを質問として先頭に追加（あれば）----
+        # descriptionを質問として登録
         if keyword_question in str(description):
             text = extract_after_last_separator(description)
             if text:
@@ -100,18 +80,17 @@ def main(inputs: Any):
                     "created_on": issue_created
                 })
 
-        # ---- journalsを時系列順にソート ----
+        # journals を昇順に並べ替え
         try:
             journals = sorted(journals, key=lambda x: x.get("created_on", ""))
         except Exception:
             pass
 
-        # ---- journalsから質問・回答を抽出 ----
         for j in journals:
             notes = str(j.get("notes", "")) or ""
             created_on = j.get("created_on", "")
             if not notes.strip():
-                continue  # 空ノート・内部メモはスキップ
+                continue
 
             if keyword_question in notes:
                 q_text = extract_after_last_separator(notes)
@@ -131,14 +110,22 @@ def main(inputs: Any):
                         "created_on": created_on
                     })
 
-        # ---- 長すぎる場合は直近 MAX_ENTRIES 件のみ保持 ----
-        if len(all_entries) > MAX_ENTRIES:
-            all_entries = all_entries[-MAX_ENTRIES:]
+        # --- 🔽 総文字数制限処理 ---
+        total_chars = 0
+        trimmed_entries = []
+        for e in reversed(all_entries):  # 直近の履歴から逆順に積み上げ
+            entry_len = len(e["text"])
+            if total_chars + entry_len > MAX_TOTAL_CHARS:
+                break
+            trimmed_entries.append(e)
+            total_chars += entry_len
 
-        status = "ok" if all_entries else "incomplete"
+        # 元の時系列順に戻す
+        trimmed_entries = list(reversed(trimmed_entries))
 
+        status = "ok" if trimmed_entries else "incomplete"
         return {
-            "entries": all_entries,
+            "entries": trimmed_entries,
             "status": status
         }
 
