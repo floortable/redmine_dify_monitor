@@ -244,7 +244,7 @@ def append_result_to_excel(issue, result):
             wb = Workbook()
             ws = wb.active
             ws.title = "査閲結果"
-            ws.append(["記録日時", "チケットID", "件名", "査閲結果", "理由", "使用LLM"])
+            ws.append(["記録日時", "チケットID", "件名", "査閲結果", "理由", "Comment", "使用LLM"])
             wb.save(EXCEL_FILE)
 
         wb = load_workbook(EXCEL_FILE)
@@ -252,16 +252,22 @@ def append_result_to_excel(issue, result):
         header = [cell.value for cell in ws[1]]
         if "使用LLM" not in header:
             ws.cell(row=1, column=len(header) + 1).value = "使用LLM"
+            header.append("使用LLM")
+        if "Comment" not in header:
+            ws.cell(row=1, column=len(header) + 1).value = "Comment"
+            header.append("Comment")
 
         recorded_at = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S%z")
-        row = [
-            recorded_at,
-            issue.get("id"),
-            issue.get("subject"),
-            result.get("査閲結果", "不明"),
-            result.get("理由", ""),
-            result.get("LLM", DIFY_LLM),
-        ]
+        row_map = {
+            "記録日時": recorded_at,
+            "チケットID": issue.get("id"),
+            "件名": issue.get("subject"),
+            "査閲結果": result.get("査閲結果", "不明"),
+            "理由": result.get("理由", ""),
+            "Comment": result.get("comment", ""),
+            "使用LLM": result.get("LLM", DIFY_LLM),
+        }
+        row = [row_map.get(col, "") for col in header]
         ws.append(row)
 
         latest_row = ws.max_row
