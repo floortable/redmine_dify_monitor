@@ -136,10 +136,10 @@ def call_dify(ticket_id):
             logging.debug(f"Dify応答(JSON): {json.dumps(data, ensure_ascii=False, indent=2)}")
         except json.JSONDecodeError:
             logging.error(f"Dify応答がJSONとして解釈できません: {resp.text[:200]}")
-            return None, None
+            return None, None, None
     except Exception as e:
         logging.error(f"Dify呼び出し失敗: {e}")
-        return None, None
+        return None, None, None
 
     try:
         raw_outputs = data.get("data", {}).get("outputs", "")
@@ -158,16 +158,24 @@ def call_dify(ticket_id):
             outputs = {}
 
         status = outputs.get("status")
+        comment_raw = outputs.get("comment")
+        comment_text = None
+        if comment_raw is not None:
+            if not isinstance(comment_raw, str):
+                comment_raw = json.dumps(comment_raw, ensure_ascii=False)
+            comment_text = safe_decode_dify_text(comment_raw).strip()
+            if not comment_text:
+                comment_text = None
         if status and status != "ok":
             if status == "caseid_mismatch":
                 logging.warning(f"Dify応答ステータスがcaseid_mismatch: チケットID={ticket_id}")
             else:
                 logging.info(f"Dify応答ステータスが非OKのためスキップ: status={status}")
-            return None, status
+            return None, status, comment_text
 
         text = outputs.get("text") or outputs.get("text_1") or outputs.get("gpt") or outputs.get("gemma") or ""
         if not text:
-            return None, status
+            return None, status, comment_text
 
         decoded = safe_decode_dify_text(text)
         cleaned = decoded.strip()
@@ -175,13 +183,13 @@ def call_dify(ticket_id):
         # --- 🚫 無効な応答を除外 ---
         if not cleaned or cleaned in ["", "null", "None"] or re.fullmatch(r"\d+", cleaned):
             logging.info(f"Dify応答が無効または数字のみのためスキップ: {repr(cleaned)}")
-            return None, status
+            return None, status, comment_text
 
-        return cleaned, status or "ok"
+        return cleaned, status or "ok", comment_text
     
     except Exception as e:
         logging.error(f"Dify応答解析エラー: {e}")
-        return None, None
+        return None, None, None
     
 # --- Dify結果解析 ---
 def parse_dify_result(text):
@@ -318,6 +326,7 @@ def post_to_teams(issue, result):
     subject = issue["subject"]
     m_result = result["査閲結果"]
     m_reason = result["理由"]
+    comment_text = (result.get("comment") or "").strip()
 
     # メインWebhook
     webhooks = [TEAMS_WEBHOOK_URL]
@@ -353,14 +362,19 @@ def post_to_teams(issue, result):
         color = "Good"
         accent_color = "#107C10"
         emoji = "✅"
+        approval_items = [
+            {"type": "TextBlock", "text": f"{emoji} **チケット承認**", "size": "Large", "weight": "Bolder", "color": "Good"},
+            {"type": "TextBlock", "text": f"Redmine チケット #{ticket_id}", "wrap": True, "spacing": "Small"},
+            {"type": "TextBlock", "text": f"件名：{subject}", "wrap": True, "spacing": "Small"},
+            {"type": "TextBlock", "text": f"理由：{m_reason}", "wrap": True, "spacing": "Small"},
+        ]
+        if comment_text:
+            approval_items.append(
+                {"type": "TextBlock", "text": f"Comment：{comment_text}", "wrap": True, "spacing": "Small"}
+            )
         bg_style = {
             "type": "Container",
-            "items": [
-                {"type": "TextBlock", "text": f"{emoji} **チケット承認**", "size": "Large", "weight": "Bolder", "color": "Good"},
-                {"type": "TextBlock", "text": f"Redmine チケット #{ticket_id}", "wrap": True, "spacing": "Small"},
-                {"type": "TextBlock", "text": f"件名：{subject}", "wrap": True, "spacing": "Small"},
-                {"type": "TextBlock", "text": f"理由：{m_reason}", "wrap": True, "spacing": "Small"},
-            ],
+            "items": approval_items,
             "bleed": True
         }
     else:
@@ -462,10 +476,10 @@ def main():
                     continue
 
                 logging.info(f"🆕 処理対象チケット: #{issue_id} ({subject}) → Dify解析開始")
-                result_text, dify_status = call_dify(issue_id)
+                result_text, dify_status, dify_comment = call_dify(issue_id)
                 if dify_status == "caseid_mismatch":
                     logging.warning(f"caseid mismatch 検知: チケット #{issue_id} ({subject})")
-                    post_caseid_mismatch_alert(issue)
+                    # post_caseid_mismatch_alert(issue)
                     processed[str(issue_id)] = updated_on
                     save_processed_issue(STATE_DB, issue_id, updated_on)
                     continue
@@ -488,10 +502,12 @@ def main():
                         result.setdefault("LLM", DIFY_LLM)
                     else:
                         result = {"査閲結果": str(result), "理由": "", "LLM": DIFY_LLM}
+                    if dify_comment:
+                        result["comment"] = dify_comment
                     append_result_to_excel(issue, result)
                     if result.get("査閲結果") != "不明":
-                        post_to_teams(issue, result)
-                        logging.info(f"Teamsに投稿: {result['査閲結果']} ({subject})")
+                        # post_to_teams(issue, result)
+                        logging.info(f"Teams投稿をスキップ: {result['査閲結果']} ({subject})")
 
                 # 二重処理防止のため、最新のupdated_onを状態DBへ保存
                 processed[str(issue_id)] = updated_on
